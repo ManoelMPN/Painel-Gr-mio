@@ -1,0 +1,6 @@
+{
+  "name": "URE Sul 3 — Gestão de Grêmios Estudantis",
+  "description": "Plataforma institucional da Diretoria de Ensino Região Sul 3 para monitoramento de ATAs, ações dos Grêmios Estudantis na SED, cruzamento de pendências das 104 escolas e comunicação assistida por IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
