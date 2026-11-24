@@ -18,19 +18,39 @@ import {
   type FocusContext,
 } from './server/geminiService.ts';
 import { sendSchoolEmail, testSmtpConnection, validateSmtpHost } from './server/mailer.ts';
-import { getPublicIntegrationStatus, loadStore, saveStore } from './server/store.ts';
+import {
+  ensureStoreHydrated,
+  getPublicIntegrationStatus,
+  loadStore,
+  markSupabaseHydratedNow,
+  resolveSupabaseConfig,
+  saveStore,
+} from './server/store.ts';
 import {
   pullSnapshotFromSupabase,
   pushSnapshotToSupabase,
   SUPABASE_SCHEMA_SQL,
+  syncEmailLogsToSupabase,
+  syncMetasToSupabase,
+  syncUreContactsToSupabase,
+  syncUsersToSupabase,
   testSupabaseConnection,
   validateSupabaseUrl,
 } from './server/supabaseSync.ts';
 
 dotenv.config();
 
-const app = express();
+export const app = express();
 app.use(express.json({ limit: '25mb' }));
+
+app.use('/api', async (_req, _res, next) => {
+  try {
+    await ensureStoreHydrated();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 function getRequestUser(req: express.Request): AuthUser | null {
   const authHeader = req.headers.authorization;
@@ -115,7 +135,21 @@ function mergeDiscoveredSchoolsAndUres(
   return { schools: mergedSchools, ureContacts: nextContacts };
 }
 
-// ---------- DASHBOARD DATA ----------
+// ---------- HEALTH & DASHBOARD DATA ----------
+
+app.get('/api/health', (_req, res) => {
+  const store = loadStore();
+  const sb = resolveSupabaseConfig(store);
+  res.json({
+    ok: true,
+    vercel: Boolean(process.env.VERCEL),
+    schoolsCount: store.schools.length,
+    atasCount: store.atas.length,
+    acoesCount: store.acoes.length,
+    supabaseConfigured: Boolean(sb.url && sb.key),
+    supabaseKeyKind: sb.key ? sb.keyKind : null,
+  });
+});
 
 app.get('/api/dashboard', (req, res) => {
   const user = getRequestUser(req);
@@ -130,6 +164,7 @@ app.get('/api/dashboard', (req, res) => {
       telefones: '',
     }));
 
+    const publicIntegrations = getPublicIntegrationStatus(store);
     res.json({
       schools: publicSchools,
       atas: store.atas,
@@ -137,7 +172,11 @@ app.get('/api/dashboard', (req, res) => {
       metas: null,
       ureContacts: [],
       emailLogs: [],
-      integrations: getPublicIntegrationStatus(store),
+      integrations: {
+        ...publicIntegrations,
+        supabaseUrl: null,
+        smtpUser: null,
+      },
     });
     return;
   }
@@ -161,7 +200,7 @@ app.get('/api/auth/status', (req, res) => {
   });
 });
 
-app.post('/api/auth/setup-master', (req, res) => {
+app.post('/api/auth/setup-master', async (req, res) => {
   if (isMasterConfigured()) {
     res.status(409).json({ error: 'O Administrador Master já está configurado.' });
     return;
@@ -190,6 +229,11 @@ app.post('/api/auth/setup-master', (req, res) => {
   };
   store.users.push(newUser);
   saveStore(store);
+
+  const sb = resolveSupabaseConfig(store);
+  if (sb.url && sb.key) {
+    await syncUsersToSupabase(sb.url, sb.key, store.users).catch(() => {});
+  }
 
   const publicUser = toPublicUser(newUser);
   const token = signAuthToken(publicUser);
@@ -241,7 +285,7 @@ app.post('/api/auth/login', (req, res) => {
 
 // ---------- ADMIN + MASTER ROUTES (Enforcing scope: 'geral' vs 'ure') ----------
 
-app.put('/api/metas', requireAdmin, (req, res) => {
+app.put('/api/metas', requireAdmin, async (req, res) => {
   const authUser = (req as express.Request & { authUser: AuthUser }).authUser;
   const body = req.body as Partial<MetasConfig>;
   const store = loadStore();
@@ -309,6 +353,12 @@ app.put('/api/metas', requireAdmin, (req, res) => {
 
   store.metas = updated;
   saveStore(store);
+
+  const sb = resolveSupabaseConfig(store);
+  if (sb.url && sb.key) {
+    await syncMetasToSupabase(sb.url, sb.key, updated).catch(() => {});
+  }
+
   res.json({ metas: updated });
 });
 
@@ -509,6 +559,11 @@ app.post('/api/emails/send', requireAdmin, async (req, res) => {
     store.emailLogs = [...newLogs, ...store.emailLogs].slice(0, 1000);
     saveStore(store);
 
+    const sb = resolveSupabaseConfig(store);
+    if (sb.url && sb.key) {
+      await syncEmailLogsToSupabase(sb.url, sb.key, newLogs).catch(() => {});
+    }
+
     res.json({
       logs: newLogs,
       smtpSentCount,
@@ -612,7 +667,7 @@ app.get('/api/master/users', requireMaster, (_req, res) => {
   res.json({ users: store.users.map(toPublicUser) });
 });
 
-app.post('/api/master/users', requireMaster, (req, res) => {
+app.post('/api/master/users', requireMaster, async (req, res) => {
   const { name, email, password, role, scope, assignedUre } = req.body as {
     name?: string;
     email?: string;
@@ -658,10 +713,16 @@ app.post('/api/master/users', requireMaster, (req, res) => {
 
   store.users.push(created);
   saveStore(store);
+
+  const sb = resolveSupabaseConfig(store);
+  if (sb.url && sb.key) {
+    await syncUsersToSupabase(sb.url, sb.key, store.users).catch(() => {});
+  }
+
   res.json({ user: toPublicUser(created) });
 });
 
-app.delete('/api/master/users/:id', requireMaster, (req, res) => {
+app.delete('/api/master/users/:id', requireMaster, async (req, res) => {
   const authUser = (req as express.Request & { authUser: AuthUser }).authUser;
   const targetId = req.params.id;
   if (targetId === authUser.id) {
@@ -671,10 +732,16 @@ app.delete('/api/master/users/:id', requireMaster, (req, res) => {
   const store = loadStore();
   store.users = store.users.filter((u) => u.id !== targetId);
   saveStore(store);
+
+  const sb = resolveSupabaseConfig(store);
+  if (sb.url && sb.key) {
+    await syncUsersToSupabase(sb.url, sb.key, store.users).catch(() => {});
+  }
+
   res.json({ ok: true });
 });
 
-app.put('/api/master/ure-contacts', requireMaster, (req, res) => {
+app.put('/api/master/ure-contacts', requireMaster, async (req, res) => {
   const { ureContacts } = req.body as { ureContacts?: UreContact[] };
   if (!Array.isArray(ureContacts)) {
     res.status(400).json({ error: 'Lista de contatos das UREs inválida.' });
@@ -689,6 +756,12 @@ app.put('/api/master/ure-contacts', requireMaster, (req, res) => {
       responsavel: (u.responsavel || '').trim(),
     }));
   saveStore(store);
+
+  const sb = resolveSupabaseConfig(store);
+  if (sb.url && sb.key) {
+    await syncUreContactsToSupabase(sb.url, sb.key, store.ureContacts).catch(() => {});
+  }
+
   res.json({ ureContacts: store.ureContacts });
 });
 
@@ -714,12 +787,12 @@ app.post('/api/master/upload-schools', requireMaster, async (req, res) => {
     saveStore(store);
 
     let supabaseSynced = false;
-    const sbUrl = process.env.SUPABASE_URL || store.integrations.supabaseUrl;
-    const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY || store.integrations.supabaseKey;
+    const { url: sbUrl, key: sbKey } = resolveSupabaseConfig(store);
     if (sbUrl && sbKey) {
       const result = await pushSnapshotToSupabase(sbUrl, sbKey, store);
       store.integrations.lastSupabaseSyncAt = result.syncedAt;
       saveStore(store);
+      markSupabaseHydratedNow();
       supabaseSynced = true;
     }
 
@@ -761,13 +834,13 @@ app.post('/api/master/upload-csv', requireMaster, async (req, res) => {
       saveStore(store);
 
       let supabaseSynced = false;
-      const sbUrl = process.env.SUPABASE_URL || store.integrations.supabaseUrl;
-      const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY || store.integrations.supabaseKey;
+      const { url: sbUrl, key: sbKey } = resolveSupabaseConfig(store);
       if (sbUrl && sbKey) {
         const result = await pushSnapshotToSupabase(sbUrl, sbKey, store);
         store.integrations.lastSupabaseSyncAt = result.syncedAt;
         store.lastAtasUploadAt = result.syncedAt;
         saveStore(store);
+        markSupabaseHydratedNow();
         supabaseSynced = true;
       }
 
@@ -799,13 +872,13 @@ app.post('/api/master/upload-csv', requireMaster, async (req, res) => {
       saveStore(store);
 
       let supabaseSynced = false;
-      const sbUrl = process.env.SUPABASE_URL || store.integrations.supabaseUrl;
-      const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY || store.integrations.supabaseKey;
+      const { url: sbUrl, key: sbKey } = resolveSupabaseConfig(store);
       if (sbUrl && sbKey) {
         const result = await pushSnapshotToSupabase(sbUrl, sbKey, store);
         store.integrations.lastSupabaseSyncAt = result.syncedAt;
         store.lastAcoesUploadAt = result.syncedAt;
         saveStore(store);
+        markSupabaseHydratedNow();
         supabaseSynced = true;
       }
 
@@ -900,10 +973,10 @@ app.post('/api/master/smtp/test', requireMaster, async (req, res) => {
 app.post('/api/master/supabase/test', requireMaster, async (req, res) => {
   try {
     const store = loadStore();
+    const sb = resolveSupabaseConfig(store);
     const { supabaseUrl, supabaseKey } = req.body as { supabaseUrl?: string; supabaseKey?: string };
-    const url = supabaseUrl?.trim() || process.env.SUPABASE_URL || store.integrations.supabaseUrl;
-    const key =
-      supabaseKey?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY || store.integrations.supabaseKey;
+    const url = supabaseUrl?.trim() || sb.url;
+    const key = supabaseKey?.trim() || sb.key;
 
     const result = await testSupabaseConnection(url, key);
     res.json(result);
@@ -915,8 +988,7 @@ app.post('/api/master/supabase/test', requireMaster, async (req, res) => {
 app.post('/api/master/supabase/push', requireMaster, async (_req, res) => {
   try {
     const store = loadStore();
-    const url = process.env.SUPABASE_URL || store.integrations.supabaseUrl;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || store.integrations.supabaseKey;
+    const { url, key } = resolveSupabaseConfig(store);
     if (!url || !key) {
       res.status(400).json({ error: 'Configure a URL e a chave Service Role do Supabase primeiro.' });
       return;
@@ -926,6 +998,7 @@ app.post('/api/master/supabase/push', requireMaster, async (_req, res) => {
     store.lastAtasUploadAt = result.syncedAt;
     store.lastAcoesUploadAt = result.syncedAt;
     saveStore(store);
+    markSupabaseHydratedNow();
     res.json({
       syncedAt: result.syncedAt,
       integrations: getPublicIntegrationStatus(store),
@@ -938,23 +1011,38 @@ app.post('/api/master/supabase/push', requireMaster, async (_req, res) => {
 app.post('/api/master/supabase/pull', requireMaster, async (_req, res) => {
   try {
     const store = loadStore();
-    const url = process.env.SUPABASE_URL || store.integrations.supabaseUrl;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || store.integrations.supabaseKey;
+    const { url, key } = resolveSupabaseConfig(store);
     if (!url || !key) {
       res.status(400).json({ error: 'Configure a URL e a chave do Supabase primeiro.' });
       return;
     }
     const pulled = await pullSnapshotFromSupabase(url, key);
     const now = new Date().toISOString();
+    if (pulled.schools.length > 0) {
+      store.schools = pulled.schools;
+    }
     store.atas = pulled.atas;
     store.acoes = pulled.acoes;
+    if (pulled.ureContacts.length > 0) {
+      store.ureContacts = pulled.ureContacts;
+    }
+    if (pulled.metas) {
+      store.metas = pulled.metas;
+    }
+    if (pulled.emailLogs.length > 0) {
+      store.emailLogs = pulled.emailLogs;
+    }
+    if (pulled.users.length > 0) {
+      store.users = pulled.users;
+    }
     store.integrations.lastSupabaseSyncAt = now;
     store.lastAtasUploadAt = now;
     store.lastAcoesUploadAt = now;
     saveStore(store);
+    markSupabaseHydratedNow();
     res.json({
-      atasCount: pulled.atas.length,
-      acoesCount: pulled.acoes.length,
+      atasCount: store.atas.length,
+      acoesCount: store.acoes.length,
       atas: store.atas,
       acoes: store.acoes,
       integrations: getPublicIntegrationStatus(store),
@@ -965,10 +1053,12 @@ app.post('/api/master/supabase/pull', requireMaster, async (_req, res) => {
 });
 
 const PORT = Number(process.env.PORT || 3000);
+const isVercel = Boolean(process.env.VERCEL);
 const isProduction = process.env.NODE_ENV === 'production' && fs.existsSync(path.resolve('dist/index.html'));
 
 async function startServer() {
   loadStore();
+  await ensureStoreHydrated();
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
@@ -989,4 +1079,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!isVercel) {
+  startServer();
+}
+
+export default app;

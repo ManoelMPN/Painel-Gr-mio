@@ -706,7 +706,7 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
 
             <ol className="text-xs text-slate-700 dark:text-slate-300 space-y-1 list-decimal list-inside bg-white dark:bg-slate-950/60 border border-slate-300/80 dark:border-slate-800 p-3 rounded-lg">
               <li>Execute o <strong>SQL Schema</strong> acima no SQL Editor do Supabase.</li>
-              <li>Em <strong>Project Settings &gt; API</strong>, informe a <strong>Project URL</strong> e a chave <strong>service_role</strong> abaixo (ou salve <code className="font-mono">SUPABASE_URL</code> e <code className="font-mono">SUPABASE_SERVICE_ROLE_KEY</code> em <strong>Settings &gt; Secrets</strong> para não perder entre reinícios).</li>
+              <li>Em <strong>Project Settings &gt; API</strong>, informe a <strong>Project URL</strong> e a chave <strong>service_role</strong> abaixo (ou configure <code className="font-mono">SUPABASE_URL</code> e <code className="font-mono">SUPABASE_SERVICE_ROLE_KEY</code> nas variáveis de ambiente da Vercel / Secrets).</li>
             </ol>
 
             <div>

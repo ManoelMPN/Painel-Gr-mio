@@ -30,9 +30,10 @@ import type {
   SchoolCompliance,
   UreContact,
 } from '../../shared/types.ts';
-import { normalizeAtaModel } from '../../shared/analytics.ts';
+import { normalizeAtaModel, normalizeSchoolKey } from '../../shared/analytics.ts';
 import {
   buildEmlContent,
+  downloadSchoolDetailPdf,
   downloadTextFile,
   formatTimestampBr,
   getStatusLabel,
@@ -676,8 +677,8 @@ export const CampaignAndGoalsView: React.FC<CampaignAndGoalsViewProps> = ({
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-400">
-        <AlertTriangle className="w-3.5 h-3.5" />
+      <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 dark:text-amber-300">
+        <AlertCircle className="w-3.5 h-3.5" />
         Pendente
       </span>
     );
@@ -1247,19 +1248,42 @@ export const CampaignAndGoalsView: React.FC<CampaignAndGoalsViewProps> = ({
                           : c.motivosPendencia.join(' · ') || 'Todas as regras cumpridas'}
                       </td>
                       <td className="py-2.5 px-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRecipientScope('schools');
-                            setComposerUreFilter(c.school.ure);
-                            setSelectedCies([c.school.cie]);
-                            setTone(c.status === 'em_dia' ? 'parabenizacao' : 'cortes');
-                            setSubTab('compose');
-                          }}
-                          className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
-                        >
-                          Enviar e-mail
-                        </button>
+                        <div className="inline-flex items-center justify-end gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const key = normalizeSchoolKey(c.school.nomeSed);
+                              const schoolAtas = atas
+                                .filter((a) => normalizeSchoolKey(a.escola) === key)
+                                .sort((a, b) => (b.dataIso || '').localeCompare(a.dataIso || ''));
+                              const schoolAcoes = acoes
+                                .filter((a) => normalizeSchoolKey(a.escola) === key)
+                                .sort((a, b) => (b.dataIso || '').localeCompare(a.dataIso || ''));
+                              downloadSchoolDetailPdf({
+                                compliance: c,
+                                atas: schoolAtas,
+                                acoes: schoolAcoes,
+                                includeMetas: true,
+                              });
+                            }}
+                            className="text-xs font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:underline whitespace-nowrap"
+                          >
+                            PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRecipientScope('schools');
+                              setComposerUreFilter(c.school.ure);
+                              setSelectedCies([c.school.cie]);
+                              setTone(c.status === 'em_dia' ? 'parabenizacao' : 'cortes');
+                              setSubTab('compose');
+                            }}
+                            className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+                          >
+                            Enviar e-mail
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

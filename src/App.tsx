@@ -4,9 +4,9 @@ import {
   Building2,
   FileSpreadsheet,
   LayoutDashboard,
-  Lock,
   LogOut,
   Moon,
+  Settings,
   ShieldCheck,
   Sparkles,
   Sun,
@@ -84,17 +84,34 @@ export default function App() {
         fetch('/api/auth/status', { headers }),
       ]);
       if (!dashRes.ok) {
-        throw new Error('Não foi possível carregar os dados das planilhas.');
+        let serverMsg = 'Não foi possível carregar os dados das planilhas.';
+        try {
+          const errBody = (await dashRes.json()) as { error?: string };
+          if (errBody?.error) serverMsg = errBody.error;
+        } catch {
+          // ignore non-JSON body
+        }
+        throw new Error(serverMsg);
       }
-      const dashData = (await dashRes.json()) as DashboardPayload;
+      const dashText = await dashRes.text();
+      let dashData: DashboardPayload;
+      try {
+        dashData = JSON.parse(dashText) as DashboardPayload;
+      } catch {
+        throw new Error('A API do servidor não respondeu em JSON. Verifique o deploy das funções /api no servidor.');
+      }
       setDashboard(dashData);
 
       if (authRes.ok) {
-        const authData = (await authRes.json()) as {
-          masterConfigured: boolean;
-          user: AuthUser | null;
-        };
-        setMasterConfigured(authData.masterConfigured);
+        try {
+          const authData = (await authRes.json()) as {
+            masterConfigured: boolean;
+            user: AuthUser | null;
+          };
+          setMasterConfigured(authData.masterConfigured);
+        } catch {
+          // ignore
+        }
       }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Erro ao conectar ao servidor.');
@@ -268,35 +285,37 @@ export default function App() {
                 <span className="hidden sm:inline">{isDark ? 'Claro' : 'Escuro'}</span>
               </button>
 
-              {/* Auth Control */}
+              {/* Auth / Admin Access Control: 'Admin' on desktop, Gear icon on mobile */}
               {authUser ? (
                 <div className="flex items-center gap-2">
-                  <span className="hidden md:inline text-xs text-slate-700 dark:text-slate-300 font-semibold">
-                    {authUser.name} (
-                    {authUser.role === 'master'
-                      ? 'Master'
-                      : authUser.scope === 'ure'
-                        ? `URE ${authUser.assignedUre}`
-                        : 'Geral'}
-                    )
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => scrollToSection('admin')}
+                    aria-label="Admin"
+                    className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs sm:text-sm font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Settings className="w-4 h-4" />
+                    <span className="hidden sm:inline">Admin</span>
+                  </button>
                   <button
                     type="button"
                     onClick={handleLogout}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs sm:text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
+                    aria-label="Sair"
+                    className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs sm:text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
                   >
                     <LogOut className="w-4 h-4" />
-                    <span>Sair</span>
+                    <span className="hidden sm:inline">Sair</span>
                   </button>
                 </div>
               ) : (
                 <button
                   type="button"
                   onClick={() => setAuthModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap shrink-0"
+                  aria-label="Admin"
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-xs sm:text-sm font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap shrink-0"
                 >
-                  <Lock className="w-4 h-4" />
-                  <span>{masterConfigured ? 'Área Admin' : 'Configurar Master'}</span>
+                  <Settings className="w-4 h-4" />
+                  <span className="hidden sm:inline">Admin</span>
                 </button>
               )}
             </div>
@@ -339,16 +358,6 @@ export default function App() {
               <Activity className="w-3.5 h-3.5" />
               Ações ({filteredAcoes.length})
             </button>
-            {authUser && (
-              <button
-                type="button"
-                onClick={() => scrollToSection('admin')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold whitespace-nowrap shrink-0"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                Painel Admin
-              </button>
-            )}
           </nav>
         </div>
       </header>
@@ -401,54 +410,57 @@ export default function App() {
                 compliance={filteredCompliance}
                 atas={filteredAtas}
                 acoes={filteredAcoes}
+                isAuthenticated={Boolean(authUser)}
               />
             </section>
 
-            {/* SECTION 3: PAINEL ADMINISTRATIVO (Visível apenas quando autenticado) */}
+            {/* SECTION 3: ADMINISTRAÇÃO (Visível apenas quando autenticado) */}
             {authUser && authToken && dashboard.metas && (
               <section
                 ref={adminRef}
-                aria-label="Painel Administrativo"
+                aria-label="Admin"
                 className="scroll-mt-32 pt-6 border-t-2 border-slate-300 dark:border-slate-800 space-y-6"
               >
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                   <div>
                     <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                      Painel Administrativo & Comunicação
+                      Administração & Comunicação
                     </h2>
                     <p className="text-sm text-slate-700 dark:text-slate-300">
-                      Definição individual de metas e prazos, envio de mensagens personalizadas e gerenciamento da plataforma.
+                      {authUser.name} · Definição individual de metas e prazos, envio de mensagens personalizadas e acompanhamento.
                     </p>
                   </div>
-                  <div className="inline-flex items-center gap-1.5 p-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-200/80 dark:bg-slate-800 self-start">
-                    <button
-                      type="button"
-                      onClick={() => setAdminView('campaigns')}
-                      className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-colors ${
-                        adminView === 'campaigns'
-                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
-                          : 'text-slate-700 dark:text-slate-300'
-                      }`}
-                    >
-                      <Sparkles className="w-4 h-4" />
-                      Metas & Mensagens
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAdminView('master')}
-                      className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-colors ${
-                        adminView === 'master'
-                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
-                          : 'text-slate-700 dark:text-slate-300'
-                      }`}
-                    >
-                      <ShieldCheck className="w-4 h-4" />
-                      Planilhas, Supabase & Perfis
-                    </button>
-                  </div>
+                  {authUser.role === 'master' && (
+                    <div className="inline-flex items-center gap-1.5 p-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-200/80 dark:bg-slate-800 self-start">
+                      <button
+                        type="button"
+                        onClick={() => setAdminView('campaigns')}
+                        className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-colors ${
+                          adminView === 'campaigns'
+                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                            : 'text-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        <Sparkles className="w-4 h-4" />
+                        Metas & Mensagens
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminView('master')}
+                        className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-colors ${
+                          adminView === 'master'
+                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                            : 'text-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        <ShieldCheck className="w-4 h-4" />
+                        Planilhas, Supabase & Perfis
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                {adminView === 'campaigns' ? (
+                {adminView === 'campaigns' || authUser.role !== 'master' ? (
                   <CampaignAndGoalsView
                     authUser={authUser}
                     authToken={authToken}

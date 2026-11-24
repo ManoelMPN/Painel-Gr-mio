@@ -3,6 +3,8 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  CheckCircle2,
+  Clock,
   Download,
   FileSpreadsheet,
   FileText,
@@ -14,6 +16,7 @@ import { normalizeSchoolKey } from '../../shared/analytics.ts';
 import {
   downloadExcelXlsx,
   downloadPdfReport,
+  downloadSchoolDetailPdf,
   downloadSemicolonCsv,
   formatIsoDateBr,
   formatNumberBr,
@@ -30,6 +33,7 @@ interface UnifiedExplorerViewProps {
   compliance: SchoolCompliance[];
   atas: AtaRecord[];
   acoes: AcaoRecord[];
+  isAuthenticated: boolean;
 }
 
 type SortDir = 'asc' | 'desc';
@@ -42,11 +46,12 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   compliance,
   atas,
   acoes,
+  isAuthenticated,
 }) => {
-  // Unified single-bar filters (URE first -> Escola second -> View-specific filters)
+  // Unified single-bar filters (Visualizar -> Escola -> Registro (ATA/Ações) -> Tipo -> Busca Rápida)
   const [schoolFilter, setSchoolFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [activityFilter, setActivityFilter] = useState<'all' | 'com_registros' | 'sem_atas' | 'sem_acoes'>('all');
+  const [recordFilter, setRecordFilter] = useState<'all' | 'ata' | 'acao'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [subthemeFilter, setSubthemeFilter] = useState<string>('all');
   const [monthFilter, setMonthFilter] = useState<string>('all');
@@ -127,6 +132,28 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     );
   }
 
+  const atasBySchoolKey = useMemo(() => {
+    const map = new Map<string, AtaRecord[]>();
+    for (const ata of atas) {
+      const key = normalizeSchoolKey(ata.escola);
+      const list = map.get(key) ?? [];
+      list.push(ata);
+      map.set(key, list);
+    }
+    return map;
+  }, [atas]);
+
+  const acoesBySchoolKey = useMemo(() => {
+    const map = new Map<string, AcaoRecord[]>();
+    for (const acao of acoes) {
+      const key = normalizeSchoolKey(acao.escola);
+      const list = map.get(key) ?? [];
+      list.push(acao);
+      map.set(key, list);
+    }
+    return map;
+  }, [acoes]);
+
   // Filtered + sorted Schools
   const filteredSchools = useMemo(() => {
     if (viewMode !== 'schools') return [];
@@ -134,10 +161,26 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     const schoolKeyFilter = schoolFilter !== 'all' ? normalizeSchoolKey(schoolFilter) : '';
 
     const items = compliance.filter((c) => {
-      if (schoolKeyFilter && normalizeSchoolKey(c.school.nomeSed) !== schoolKeyFilter) return false;
-      if (activityFilter === 'com_registros' && c.totalAtas === 0 && c.totalAcoes === 0) return false;
-      if (activityFilter === 'sem_atas' && c.totalAtas > 0) return false;
-      if (activityFilter === 'sem_acoes' && c.totalAcoes > 0) return false;
+      const schoolKey = normalizeSchoolKey(c.school.nomeSed);
+      if (schoolKeyFilter && schoolKey !== schoolKeyFilter) return false;
+
+      if (recordFilter === 'ata') {
+        const list = atasBySchoolKey.get(schoolKey) ?? [];
+        const matched =
+          categoryFilter === 'all'
+            ? list
+            : list.filter((a) => a.modeloNormalizado === categoryFilter);
+        if (matched.length === 0) return false;
+      } else if (recordFilter === 'acao') {
+        const list = acoesBySchoolKey.get(schoolKey) ?? [];
+        const matched = list.filter(
+          (a) =>
+            (categoryFilter === 'all' || a.tema === categoryFilter) &&
+            (subthemeFilter === 'all' || a.subtema === subthemeFilter)
+        );
+        if (matched.length === 0) return false;
+      }
+
       if (q) {
         const hay = `${c.school.nomeSed} ${c.school.nomePdf} ${c.school.cie} ${c.school.ure}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -164,7 +207,18 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
           return a.school.nomeSed.localeCompare(b.school.nomeSed) * mult;
       }
     });
-  }, [viewMode, compliance, schoolFilter, activityFilter, searchTerm, schoolSort]);
+  }, [
+    viewMode,
+    compliance,
+    schoolFilter,
+    recordFilter,
+    categoryFilter,
+    subthemeFilter,
+    atasBySchoolKey,
+    acoesBySchoolKey,
+    searchTerm,
+    schoolSort,
+  ]);
 
   // Filtered + sorted ATAs
   const filteredAtas = useMemo(() => {
@@ -275,17 +329,30 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
 
   function handleSwitchMode(nextMode: ExplorerViewMode) {
     onViewModeChange(nextMode);
+    setRecordFilter(nextMode === 'atas' ? 'ata' : nextMode === 'acoes' ? 'acao' : 'all');
     setCategoryFilter('all');
     setSubthemeFilter('all');
     setMonthFilter('all');
     setPage(1);
   }
 
+  function handleRecordFilterChange(nextRecord: 'all' | 'ata' | 'acao') {
+    setRecordFilter(nextRecord);
+    setCategoryFilter('all');
+    setSubthemeFilter('all');
+    setPage(1);
+    if (viewMode !== 'schools') {
+      if (nextRecord === 'all') onViewModeChange('schools');
+      else if (nextRecord === 'ata') onViewModeChange('atas');
+      else onViewModeChange('acoes');
+    }
+  }
+
   function handleResetFilters() {
     onSelectUre('all');
     setSchoolFilter('all');
     setSearchTerm('');
-    setActivityFilter('all');
+    setRecordFilter(viewMode === 'atas' ? 'ata' : viewMode === 'acoes' ? 'acao' : 'all');
     setCategoryFilter('all');
     setSubthemeFilter('all');
     setMonthFilter('all');
@@ -403,7 +470,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
           </div>
 
           {/* 2. ESCOLA */}
-          <div className="lg:col-span-3">
+          <div className={viewMode === 'schools' && recordFilter !== 'acao' ? 'lg:col-span-3' : 'lg:col-span-2'}>
             <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
               Unidade Escolar
             </label>
@@ -425,29 +492,67 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
             </select>
           </div>
 
-          {/* 3. CONTEXT FILTERS */}
-          {viewMode === 'schools' && (
+          {/* 3. REGISTRO (Todos | ATA | Ações) */}
+          <div className={viewMode === 'acoes' ? 'lg:col-span-1' : 'lg:col-span-2'}>
+            <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+              Registro
+            </label>
+            <select
+              aria-label="Filtrar por tipo de registro"
+              value={viewMode === 'atas' ? 'ata' : viewMode === 'acoes' ? 'acao' : recordFilter}
+              onChange={(e) => handleRecordFilterChange(e.target.value as 'all' | 'ata' | 'acao')}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+            >
+              <option value="all">Todos</option>
+              <option value="ata">ATA</option>
+              <option value="acao">Ações</option>
+            </select>
+          </div>
+
+          {/* 4. CONTEXT FILTERS: Tipo de ATA ou Tipo de Ação (Tema + Subtema) + Busca Rápida */}
+          {viewMode === 'schools' && recordFilter === 'all' && (
             <>
-              <div className="lg:col-span-3">
+              <div className="lg:col-span-2">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Situação dos Registros
+                  Tipo de ATA / Ação
                 </label>
                 <select
-                  aria-label="Filtrar escolas por atividade"
-                  value={activityFilter}
+                  aria-label="Filtrar por tipo de ATA ou ação"
+                  value="all"
                   onChange={(e) => {
-                    setActivityFilter(e.target.value as typeof activityFilter);
-                    setPage(1);
+                    const val = e.target.value;
+                    if (val.startsWith('ata::')) {
+                      setRecordFilter('ata');
+                      setCategoryFilter(val.slice(5));
+                      setSubthemeFilter('all');
+                      setPage(1);
+                    } else if (val.startsWith('acao::')) {
+                      setRecordFilter('acao');
+                      setCategoryFilter(val.slice(6));
+                      setSubthemeFilter('all');
+                      setPage(1);
+                    }
                   }}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 >
-                  <option value="all">Todas as unidades</option>
-                  <option value="com_registros">Com lançamentos</option>
-                  <option value="sem_atas">Sem ATAs registradas</option>
-                  <option value="sem_acoes">Sem Ações registradas</option>
+                  <option value="all">Todos os tipos</option>
+                  <optgroup label="Modelos de ATA">
+                    {ataModels.map((m) => (
+                      <option key={`ata-${m}`} value={`ata::${m}`}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Temas de Ação">
+                    {acaoThemes.map((t) => (
+                      <option key={`acao-${t}`} value={`acao::${t}`}>
+                        {t}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
-              <div className="lg:col-span-4 relative">
+              <div className="lg:col-span-3 relative">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Busca Rápida
                 </label>
@@ -468,11 +573,121 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
             </>
           )}
 
+          {viewMode === 'schools' && recordFilter === 'ata' && (
+            <>
+              <div className="lg:col-span-2">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Tipo de ATA
+                </label>
+                <select
+                  aria-label="Filtrar por tipo de ATA"
+                  value={categoryFilter}
+                  onChange={(e) => {
+                    setCategoryFilter(e.target.value);
+                    setPage(1);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                >
+                  <option value="all">Todos os modelos de ATA</option>
+                  {ataModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="lg:col-span-3 relative">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Busca Rápida
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="search"
+                    placeholder="Nome da escola ou código CIE..."
+                    value={searchTerm}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value);
+                      setPage(1);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 pl-9 pr-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {viewMode === 'schools' && recordFilter === 'acao' && (
+            <>
+              <div className="lg:col-span-2">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Tipo de Ação (Tema)
+                </label>
+                <select
+                  aria-label="Filtrar por tema da ação"
+                  value={categoryFilter}
+                  onChange={(e) => {
+                    setCategoryFilter(e.target.value);
+                    setSubthemeFilter('all');
+                    setPage(1);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                >
+                  <option value="all">Todos os temas</option>
+                  {acaoThemes.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="lg:col-span-2">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Subtema
+                </label>
+                <select
+                  aria-label="Filtrar por subtema"
+                  value={subthemeFilter}
+                  onChange={(e) => {
+                    setSubthemeFilter(e.target.value);
+                    setPage(1);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                >
+                  <option value="all">Todos subtemas</option>
+                  {acaoSubthemes.map((sub) => (
+                    <option key={sub} value={sub}>
+                      {sub}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="lg:col-span-2 relative">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Busca Rápida
+                </label>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="search"
+                    placeholder="Escola ou CIE..."
+                    value={searchTerm}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value);
+                      setPage(1);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 pl-9 pr-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
           {viewMode === 'atas' && (
             <>
-              <div className="lg:col-span-3">
+              <div className="lg:col-span-2">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Modelo de ATA
+                  Tipo de ATA
                 </label>
                 <select
                   aria-label="Filtrar por modelo de ATA"
@@ -514,7 +729,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
               </div>
               <div className="lg:col-span-2">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Palavra-chave
+                  Busca Rápida
                 </label>
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -537,7 +752,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
             <>
               <div className="lg:col-span-2">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Tema
+                  Tipo de Ação (Tema)
                 </label>
                 <select
                   aria-label="Filtrar por tema da ação"
@@ -601,7 +816,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
               </div>
               <div className="lg:col-span-2">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Palavra-chave
+                  Busca Rápida
                 </label>
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1019,7 +1234,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
         )}
       </div>
 
-      {/* Public School Detail Drawer (No email, no distrito, no ensino, no metas) */}
+      {/* School Detail Drawer (Downloadable complete PDF + soft-colored Metas when authenticated) */}
       {selectedCompliance && (
         <div
           className="fixed inset-0 z-50 flex justify-end bg-slate-950/60 backdrop-blur-xs"
@@ -1033,25 +1248,42 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-slate-300 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
-              <div>
+              <div className="min-w-0">
                 <div className="text-xs font-mono text-slate-600 dark:text-slate-400">
                   URE {selectedCompliance.school.ure} · CIE {selectedCompliance.school.cie}
                 </div>
                 <h3
                   id="school-drawer-title"
-                  className="text-xl font-bold text-slate-900 dark:text-slate-100 mt-1"
+                  className="text-lg sm:text-xl font-bold text-slate-900 dark:text-slate-100 mt-1"
                 >
                   {selectedCompliance.school.nomeSed}
                 </h3>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedSchoolCie(null)}
-                aria-label="Fechar detalhes da escola"
-                className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadSchoolDetailPdf({
+                      compliance: selectedCompliance,
+                      atas: selectedSchoolAtas,
+                      acoes: selectedSchoolAcoes,
+                      includeMetas: isAuthenticated,
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs sm:text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors whitespace-nowrap"
+                >
+                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <span>Baixar PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSchoolCie(null)}
+                  aria-label="Fechar detalhes da escola"
+                  className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -1079,6 +1311,58 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   </div>
                 </div>
               </div>
+
+              {isAuthenticated && (
+                <div>
+                  <h4 className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-2">
+                    Metas e Prazos
+                  </h4>
+                  {!selectedCompliance.hasConfiguredMetas || selectedCompliance.ruleEvaluations.length === 0 ? (
+                    <p className="text-sm text-slate-600 dark:text-slate-400 rounded-lg border border-slate-300 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 p-3.5">
+                      Nenhuma meta estipulada para esta unidade até o momento.
+                    </p>
+                  ) : (
+                    <div className="border border-slate-300 dark:border-slate-800 rounded-lg divide-y divide-slate-200 dark:divide-slate-800">
+                      {selectedCompliance.ruleEvaluations.map((ev) => (
+                        <div
+                          key={ev.ruleId}
+                          className="p-3 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-medium text-slate-900 dark:text-slate-100">
+                              {ev.label}
+                            </div>
+                            <div className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 tabular-nums">
+                              Realizado: {ev.atual} / Meta: {ev.meta}
+                              {ev.prazoLimite ? ` · Prazo: ${formatIsoDateBr(ev.prazoLimite)}` : ''}
+                            </div>
+                          </div>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md border text-xs font-semibold shrink-0 ${
+                              ev.atendido
+                                ? 'border-emerald-200 bg-emerald-50/90 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300'
+                                : ev.vencido
+                                  ? 'border-amber-200 bg-amber-50/90 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300'
+                                  : 'border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            }`}
+                          >
+                            {ev.atendido ? (
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            ) : (
+                              <Clock className="w-3.5 h-3.5" />
+                            )}
+                            {ev.atendido
+                              ? 'Cumprida'
+                              : ev.vencido
+                                ? 'Não cumprida'
+                                : 'Em andamento'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div>
                 <h4 className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-2">

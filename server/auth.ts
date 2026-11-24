@@ -23,7 +23,10 @@ interface TokenPayload {
   exp: number;
 }
 
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const SESSION_SECRET =
+  process.env.AUTH_SECRET?.trim() ||
+  process.env.SESSION_SECRET?.trim() ||
+  crypto.randomBytes(32).toString('hex');
 
 export function hashPassword(password: string, existingSalt?: string): { hash: string; salt: string } {
   const salt = existingSalt || crypto.randomBytes(16).toString('hex');

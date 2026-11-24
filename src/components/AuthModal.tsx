@@ -78,7 +78,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               id="auth-modal-title"
               className="text-lg font-semibold text-slate-900 dark:text-slate-100"
             >
-              {isFirstSetup ? 'Primeiro Acesso — Admin Master' : 'Acesso Administrativo'}
+              {isFirstSetup ? 'Primeiro Acesso — Administração' : 'Acesso Administrativo'}
             </h2>
           </div>
           <button
@@ -94,7 +94,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
             {isFirstSetup
-              ? 'Defina o e-mail e a senha do Administrador Master para liberar o envio de planilhas, sincronização com o Supabase e criação de perfis regionais ou gerais.'
+              ? 'Defina o e-mail e a senha do administrador principal para liberar o envio de planilhas, sincronização com o Supabase e criação de perfis regionais ou gerais.'
               : 'A visualização dos registros das escolas e diretorias é aberta. Entre com seu e-mail e senha cadastrados para definir metas, gerar comunicados ou gerenciar a base.'}
           </p>
 
@@ -113,7 +113,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 htmlFor="auth-name"
                 className="block text-sm font-medium text-slate-800 dark:text-slate-200 mb-1.5"
               >
-                Nome do Responsável Master
+                Nome do Administrador Principal
               </label>
               <input
                 id="auth-name"
