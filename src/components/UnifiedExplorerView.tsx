@@ -37,6 +37,15 @@ interface UnifiedExplorerViewProps {
 }
 
 type SortDir = 'asc' | 'desc';
+type PresenceFilter = 'records' | 'all_schools' | 'with_record' | 'without_record';
+
+interface SchoolComparisonRow {
+  compliance: SchoolCompliance;
+  matchedCount: number;
+  matchedParticipants: number;
+  latestMatchDate: string | null;
+  hasRecord: boolean;
+}
 
 export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   viewMode,
@@ -48,15 +57,15 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   acoes,
   isAuthenticated,
 }) => {
-  // Unified single-bar filters (Visualizar -> Escola -> Registro (ATA/Ações) -> Tipo -> Busca Rápida)
+  // Unified filter bar state (Escola -> Registro -> Tipo/Tema/Subtema -> Com/Sem Registro -> Mês -> Busca Rápida)
   const [schoolFilter, setSchoolFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [recordFilter, setRecordFilter] = useState<'all' | 'ata' | 'acao'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [subthemeFilter, setSubthemeFilter] = useState<string>('all');
   const [monthFilter, setMonthFilter] = useState<string>('all');
+  const [presenceFilter, setPresenceFilter] = useState<PresenceFilter>('all_schools');
 
-  // Column-click sorting state per view mode
+  // Column-click sorting state per table mode
   const [schoolSort, setSchoolSort] = useState<{ key: string; dir: SortDir }>({
     key: 'nomeSed',
     dir: 'asc',
@@ -77,6 +86,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   const prevViewModeRef = useRef<ExplorerViewMode>(viewMode);
   const skipNextViewSyncRef = useRef(false);
 
+  // Sync external viewMode changes (e.g. header nav or overview cards)
   useEffect(() => {
     if (prevViewModeRef.current === viewMode) return;
     prevViewModeRef.current = viewMode;
@@ -84,12 +94,17 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
       skipNextViewSyncRef.current = false;
       return;
     }
-    setRecordFilter(viewMode === 'atas' ? 'ata' : viewMode === 'acoes' ? 'acao' : 'all');
     setCategoryFilter('all');
     setSubthemeFilter('all');
     setMonthFilter('all');
+    setPresenceFilter(viewMode === 'schools' ? 'all_schools' : 'records');
     setPage(1);
   }, [viewMode]);
+
+  // Effective presence mode: 'schools' view cannot be in 'records' mode
+  const effectivePresence: PresenceFilter =
+    viewMode === 'schools' && presenceFilter === 'records' ? 'all_schools' : presenceFilter;
+  const isSchoolTableMode = viewMode === 'schools' || effectivePresence !== 'records';
 
   // Ordered school options for the URE currently selected
   const schoolOptions = useMemo(() => {
@@ -155,7 +170,14 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
       if (prev.key === key) {
         return { key, dir: (prev.dir === 'asc' ? 'desc' : 'asc') as SortDir };
       }
-      const defaultDesc = key === 'totalAtas' || key === 'totalAcoes' || key === 'participantes' || key === 'dataIso' || key === 'latestDate';
+      const defaultDesc =
+        key === 'totalAtas' ||
+        key === 'totalAcoes' ||
+        key === 'matchedCount' ||
+        key === 'matchedParticipants' ||
+        key === 'participantes' ||
+        key === 'dataIso' ||
+        key === 'latestDate';
       return { key, dir: (defaultDesc ? 'desc' : 'asc') as SortDir };
     };
     if (mode === 'schools') setSchoolSort(toggle);
@@ -175,54 +197,124 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     );
   }
 
-  const atasBySchoolKey = useMemo(() => {
-    const map = new Map<string, AtaRecord[]>();
-    for (const ata of atas) {
-      const key = normalizeSchoolKey(ata.escola);
-      const list = map.get(key) ?? [];
-      list.push(ata);
-      map.set(key, list);
-    }
-    return map;
-  }, [atas]);
+  // Base ATAs / Ações filtered by Category (Modelo / Tema), Subtema, and Mês (before school/search filter)
+  const baseCategoryAtas = useMemo(() => {
+    if (viewMode !== 'atas') return [];
+    return atas.filter(
+      (a) =>
+        (categoryFilter === 'all' || a.modeloNormalizado === categoryFilter) &&
+        (monthFilter === 'all' || a.mesAno === monthFilter)
+    );
+  }, [viewMode, atas, categoryFilter, monthFilter]);
 
-  const acoesBySchoolKey = useMemo(() => {
-    const map = new Map<string, AcaoRecord[]>();
-    for (const acao of acoes) {
-      const key = normalizeSchoolKey(acao.escola);
-      const list = map.get(key) ?? [];
-      list.push(acao);
-      map.set(key, list);
-    }
-    return map;
-  }, [acoes]);
+  const baseCategoryAcoes = useMemo(() => {
+    if (viewMode !== 'acoes') return [];
+    return acoes.filter(
+      (a) =>
+        (categoryFilter === 'all' || a.tema === categoryFilter) &&
+        (subthemeFilter === 'all' || a.subtema === subthemeFilter) &&
+        (monthFilter === 'all' || a.mesAno === monthFilter)
+    );
+  }, [viewMode, acoes, categoryFilter, subthemeFilter, monthFilter]);
 
-  // Filtered + sorted Schools
-  const filteredSchools = useMemo(() => {
-    if (viewMode !== 'schools') return [];
+  // Comparison rows against the FULL school list (all 104 schools in URE Sul 3 or active URE)
+  const schoolComparisonBase = useMemo<SchoolComparisonRow[]>(() => {
+    if (viewMode === 'atas') {
+      const grouped = new Map<string, AtaRecord[]>();
+      for (const ata of baseCategoryAtas) {
+        const key = normalizeSchoolKey(ata.escola);
+        const list = grouped.get(key) ?? [];
+        list.push(ata);
+        grouped.set(key, list);
+      }
+      return compliance.map((c) => {
+        const list = grouped.get(normalizeSchoolKey(c.school.nomeSed)) ?? [];
+        const latest =
+          list
+            .map((a) => a.dataIso)
+            .filter(Boolean)
+            .sort()
+            .reverse()[0] ?? null;
+        return {
+          compliance: c,
+          matchedCount: list.length,
+          matchedParticipants: list.reduce((sum, a) => sum + (a.participantes || 0), 0),
+          latestMatchDate: latest,
+          hasRecord: list.length > 0,
+        };
+      });
+    }
+
+    if (viewMode === 'acoes') {
+      const grouped = new Map<string, AcaoRecord[]>();
+      for (const acao of baseCategoryAcoes) {
+        const key = normalizeSchoolKey(acao.escola);
+        const list = grouped.get(key) ?? [];
+        list.push(acao);
+        grouped.set(key, list);
+      }
+      return compliance.map((c) => {
+        const list = grouped.get(normalizeSchoolKey(c.school.nomeSed)) ?? [];
+        const latest =
+          list
+            .map((a) => a.dataIso)
+            .filter(Boolean)
+            .sort()
+            .reverse()[0] ?? null;
+        return {
+          compliance: c,
+          matchedCount: list.length,
+          matchedParticipants: list.reduce((sum, a) => sum + (a.participantes || 0), 0),
+          latestMatchDate: latest,
+          hasRecord: list.length > 0,
+        };
+      });
+    }
+
+    // Default 'schools' ('Todos') mode: compare general presence (ATAs + Ações)
+    return compliance.map((c) => {
+      const total = c.totalAtas + c.totalAcoes;
+      const latest =
+        [c.ultimaAtaData, c.ultimaAcaoData]
+          .filter((d): d is string => Boolean(d))
+          .sort()
+          .reverse()[0] ?? null;
+      return {
+        compliance: c,
+        matchedCount: total,
+        matchedParticipants: c.totalParticipantesAtas + c.totalParticipantesAcoes,
+        latestMatchDate: latest,
+        hasRecord: total > 0,
+      };
+    });
+  }, [viewMode, compliance, baseCategoryAtas, baseCategoryAcoes]);
+
+  // Network-wide counts for the active filter (for dropdown labels and summary banner)
+  const comparisonTotals = useMemo(() => {
+    const totalSchools = schoolComparisonBase.length;
+    const withRecord = schoolComparisonBase.filter((r) => r.hasRecord).length;
+    const withoutRecord = totalSchools - withRecord;
+    const launches =
+      viewMode === 'atas'
+        ? baseCategoryAtas.length
+        : viewMode === 'acoes'
+          ? baseCategoryAcoes.length
+          : atas.length + acoes.length;
+    return { totalSchools, withRecord, withoutRecord, launches };
+  }, [schoolComparisonBase, viewMode, baseCategoryAtas, baseCategoryAcoes, atas.length, acoes.length]);
+
+  // Filtered + sorted School comparison list
+  const filteredComparisonSchools = useMemo(() => {
+    if (!isSchoolTableMode) return [];
     const q = searchTerm.trim().toLowerCase();
     const schoolKeyFilter = schoolFilter !== 'all' ? normalizeSchoolKey(schoolFilter) : '';
 
-    const items = compliance.filter((c) => {
+    const items = schoolComparisonBase.filter((row) => {
+      const c = row.compliance;
       const schoolKey = normalizeSchoolKey(c.school.nomeSed);
       if (schoolKeyFilter && schoolKey !== schoolKeyFilter) return false;
-
-      if (recordFilter === 'ata') {
-        const list = atasBySchoolKey.get(schoolKey) ?? [];
-        const matched =
-          categoryFilter === 'all'
-            ? list
-            : list.filter((a) => a.modeloNormalizado === categoryFilter);
-        if (matched.length === 0) return false;
-      } else if (recordFilter === 'acao') {
-        const list = acoesBySchoolKey.get(schoolKey) ?? [];
-        const matched = list.filter(
-          (a) =>
-            (categoryFilter === 'all' || a.tema === categoryFilter) &&
-            (subthemeFilter === 'all' || a.subtema === subthemeFilter)
-        );
-        if (matched.length === 0) return false;
-      }
+      if (effectivePresence === 'with_record' && !row.hasRecord) return false;
+      if (effectivePresence === 'without_record' && row.hasRecord) return false;
 
       if (q) {
         const hay = `${c.school.nomeSed} ${c.school.nomePdf} ${c.school.cie} ${c.school.ure}`.toLowerCase();
@@ -232,47 +324,36 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     });
 
     const mult = schoolSort.dir === 'asc' ? 1 : -1;
-    return items.sort((a, b) => {
-      const latestA = [a.ultimaAtaData, a.ultimaAcaoData].filter(Boolean).sort().reverse()[0] ?? '';
-      const latestB = [b.ultimaAtaData, b.ultimaAcaoData].filter(Boolean).sort().reverse()[0] ?? '';
+    return [...items].sort((a, b) => {
       switch (schoolSort.key) {
         case 'cie':
-          return a.school.cie.localeCompare(b.school.cie) * mult;
+          return a.compliance.school.cie.localeCompare(b.compliance.school.cie) * mult;
         case 'ure':
-          return a.school.ure.localeCompare(b.school.ure) * mult;
+          return a.compliance.school.ure.localeCompare(b.compliance.school.ure) * mult;
+        case 'matchedCount':
+          return (a.matchedCount - b.matchedCount) * mult;
+        case 'matchedParticipants':
+          return (a.matchedParticipants - b.matchedParticipants) * mult;
         case 'totalAtas':
-          return (a.totalAtas - b.totalAtas) * mult;
+          return (a.compliance.totalAtas - b.compliance.totalAtas) * mult;
         case 'totalAcoes':
-          return (a.totalAcoes - b.totalAcoes) * mult;
+          return (a.compliance.totalAcoes - b.compliance.totalAcoes) * mult;
         case 'latestDate':
-          return latestA.localeCompare(latestB) * mult;
+          return (a.latestMatchDate ?? '').localeCompare(b.latestMatchDate ?? '') * mult;
         default:
-          return a.school.nomeSed.localeCompare(b.school.nomeSed) * mult;
+          return a.compliance.school.nomeSed.localeCompare(b.compliance.school.nomeSed) * mult;
       }
     });
-  }, [
-    viewMode,
-    compliance,
-    schoolFilter,
-    recordFilter,
-    categoryFilter,
-    subthemeFilter,
-    atasBySchoolKey,
-    acoesBySchoolKey,
-    searchTerm,
-    schoolSort,
-  ]);
+  }, [isSchoolTableMode, schoolComparisonBase, schoolFilter, effectivePresence, searchTerm, schoolSort]);
 
-  // Filtered + sorted ATAs
+  // Filtered + sorted ATAs (individual launches mode)
   const filteredAtas = useMemo(() => {
-    if (viewMode !== 'atas') return [];
+    if (viewMode !== 'atas' || isSchoolTableMode) return [];
     const q = searchTerm.trim().toLowerCase();
     const schoolKeyFilter = schoolFilter !== 'all' ? normalizeSchoolKey(schoolFilter) : '';
 
-    const items = atas.filter((a) => {
+    const items = baseCategoryAtas.filter((a) => {
       if (schoolKeyFilter && normalizeSchoolKey(a.escola) !== schoolKeyFilter) return false;
-      if (categoryFilter !== 'all' && a.modeloNormalizado !== categoryFilter) return false;
-      if (monthFilter !== 'all' && a.mesAno !== monthFilter) return false;
       if (q) {
         const text = `${a.diretoria} ${a.escola} ${a.modeloAta} ${a.convocacao} ${a.dataReuniao}`.toLowerCase();
         if (!text.includes(q)) return false;
@@ -281,7 +362,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     });
 
     const mult = ataSort.dir === 'asc' ? 1 : -1;
-    return items.sort((a, b) => {
+    return [...items].sort((a, b) => {
       switch (ataSort.key) {
         case 'diretoria':
           return a.diretoria.localeCompare(b.diretoria) * mult;
@@ -297,19 +378,16 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
           return (a.dataIso || '').localeCompare(b.dataIso || '') * mult;
       }
     });
-  }, [viewMode, atas, schoolFilter, searchTerm, categoryFilter, monthFilter, ataSort]);
+  }, [viewMode, isSchoolTableMode, baseCategoryAtas, schoolFilter, searchTerm, ataSort]);
 
-  // Filtered + sorted Ações
+  // Filtered + sorted Ações (individual launches mode)
   const filteredAcoes = useMemo(() => {
-    if (viewMode !== 'acoes') return [];
+    if (viewMode !== 'acoes' || isSchoolTableMode) return [];
     const q = searchTerm.trim().toLowerCase();
     const schoolKeyFilter = schoolFilter !== 'all' ? normalizeSchoolKey(schoolFilter) : '';
 
-    const items = acoes.filter((a) => {
+    const items = baseCategoryAcoes.filter((a) => {
       if (schoolKeyFilter && normalizeSchoolKey(a.escola) !== schoolKeyFilter) return false;
-      if (categoryFilter !== 'all' && a.tema !== categoryFilter) return false;
-      if (subthemeFilter !== 'all' && a.subtema !== subthemeFilter) return false;
-      if (monthFilter !== 'all' && a.mesAno !== monthFilter) return false;
       if (q) {
         const text = `${a.diretoria} ${a.escola} ${a.tema} ${a.subtema} ${a.nomeAcao} ${a.proposta}`.toLowerCase();
         if (!text.includes(q)) return false;
@@ -318,7 +396,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     });
 
     const mult = acaoSort.dir === 'asc' ? 1 : -1;
-    return items.sort((a, b) => {
+    return [...items].sort((a, b) => {
       switch (acaoSort.key) {
         case 'diretoria':
           return a.diretoria.localeCompare(b.diretoria) * mult;
@@ -336,18 +414,20 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
           return (a.dataIso || '').localeCompare(b.dataIso || '') * mult;
       }
     });
-  }, [viewMode, acoes, schoolFilter, searchTerm, categoryFilter, subthemeFilter, monthFilter, acaoSort]);
+  }, [viewMode, isSchoolTableMode, baseCategoryAcoes, schoolFilter, searchTerm, acaoSort]);
 
-  const totalCount =
-    viewMode === 'schools'
-      ? filteredSchools.length
-      : viewMode === 'atas'
-        ? filteredAtas.length
-        : filteredAcoes.length;
+  const totalCount = isSchoolTableMode
+    ? filteredComparisonSchools.length
+    : viewMode === 'atas'
+      ? filteredAtas.length
+      : filteredAcoes.length;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const safePage = Math.min(page, totalPages);
 
-  const pagedSchools = filteredSchools.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pagedComparisonSchools = filteredComparisonSchools.slice(
+    (safePage - 1) * pageSize,
+    safePage * pageSize
+  );
   const pagedAtas = filteredAtas.slice((safePage - 1) * pageSize, safePage * pageSize);
   const pagedAcoes = filteredAcoes.slice((safePage - 1) * pageSize, safePage * pageSize);
 
@@ -370,18 +450,6 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
       .sort((a, b) => (b.dataIso || '').localeCompare(a.dataIso || ''));
   }, [acoes, selectedCompliance]);
 
-  function handleSwitchMode(nextMode: ExplorerViewMode) {
-    if (nextMode !== viewMode) {
-      skipNextViewSyncRef.current = true;
-      onViewModeChange(nextMode);
-    }
-    setRecordFilter(nextMode === 'atas' ? 'ata' : nextMode === 'acoes' ? 'acao' : 'all');
-    setCategoryFilter('all');
-    setSubthemeFilter('all');
-    setMonthFilter('all');
-    setPage(1);
-  }
-
   function handleRecordFilterChange(nextRecord: 'all' | 'ata' | 'acao') {
     const nextMode: ExplorerViewMode =
       nextRecord === 'all' ? 'schools' : nextRecord === 'ata' ? 'atas' : 'acoes';
@@ -389,10 +457,18 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
       skipNextViewSyncRef.current = true;
       onViewModeChange(nextMode);
     }
-    setRecordFilter(nextRecord);
     setCategoryFilter('all');
     setSubthemeFilter('all');
     setMonthFilter('all');
+    // Preserve 'with_record' / 'without_record' if user is actively comparing schools across types
+    setPresenceFilter((prev) => {
+      if (nextMode === 'schools') {
+        return prev === 'with_record' || prev === 'without_record' ? prev : 'all_schools';
+      }
+      return prev === 'with_record' || prev === 'without_record' || prev === 'all_schools'
+        ? prev
+        : 'records';
+    });
     setPage(1);
   }
 
@@ -400,11 +476,31 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     onSelectUre('all');
     setSchoolFilter('all');
     setSearchTerm('');
-    setRecordFilter(viewMode === 'atas' ? 'ata' : viewMode === 'acoes' ? 'acao' : 'all');
     setCategoryFilter('all');
     setSubthemeFilter('all');
     setMonthFilter('all');
+    setPresenceFilter(viewMode === 'schools' ? 'all_schools' : 'records');
     setPage(1);
+  }
+
+  function describeActiveFilter(): string {
+    const parts: string[] = [];
+    if (viewMode === 'atas') {
+      parts.push(categoryFilter === 'all' ? 'Todas as ATAs' : `ATA: ${categoryFilter}`);
+    } else if (viewMode === 'acoes') {
+      if (categoryFilter !== 'all') parts.push(`Tema: ${categoryFilter}`);
+      else parts.push('Todas as Ações');
+      if (subthemeFilter !== 'all') parts.push(`Subtema: ${subthemeFilter}`);
+    } else {
+      parts.push('Geral (ATAs e Ações)');
+    }
+    if (monthFilter !== 'all') parts.push(`Mês: ${monthFilter}`);
+    if (effectivePresence === 'with_record') parts.push('Somente escolas com registro');
+    else if (effectivePresence === 'without_record') parts.push('Somente escolas sem registro');
+    else if (effectivePresence === 'all_schools' && viewMode !== 'schools') {
+      parts.push('Comparativo completo das escolas');
+    }
+    return parts.join(' · ');
   }
 
   function buildExportDataset(): {
@@ -415,23 +511,64 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     rows: (string | number)[][];
   } {
     const dateSuffix = new Date().toISOString().slice(0, 10);
-    if (viewMode === 'schools') {
+
+    if (isSchoolTableMode) {
+      if (viewMode === 'schools') {
+        return {
+          baseName: `gremio-estudantil-escolas-${dateSuffix}`,
+          sheetName: 'Escolas',
+          title: 'Grêmio Estudantil SEDUC-SP — Comparativo de Unidades Escolares',
+          headers: [
+            'URE',
+            'CIE',
+            'Escola',
+            'Situação',
+            'Total ATAs',
+            'Participantes ATAs',
+            'Total Ações',
+            'Estudantes Ações',
+          ],
+          rows: filteredComparisonSchools.map((r) => [
+            r.compliance.school.ure,
+            r.compliance.school.cie,
+            r.compliance.school.nomeSed,
+            r.hasRecord ? 'Com registro' : 'Sem registro',
+            r.compliance.totalAtas,
+            r.compliance.totalParticipantesAtas,
+            r.compliance.totalAcoes,
+            r.compliance.totalParticipantesAcoes,
+          ]),
+        };
+      }
+
+      const isAta = viewMode === 'atas';
       return {
-        baseName: `gremio-estudantil-escolas-${dateSuffix}`,
-        sheetName: 'Escolas',
-        title: 'Grêmio Estudantil SEDUC-SP — Unidades Escolares',
-        headers: ['URE', 'CIE', 'Escola', 'Total ATAs', 'Participantes ATAs', 'Total Ações', 'Estudantes Ações'],
-        rows: filteredSchools.map((c) => [
-          c.school.ure,
-          c.school.cie,
-          c.school.nomeSed,
-          c.totalAtas,
-          c.totalParticipantesAtas,
-          c.totalAcoes,
-          c.totalParticipantesAcoes,
+        baseName: `gremio-estudantil-comparativo-${isAta ? 'atas' : 'acoes'}-${dateSuffix}`,
+        sheetName: isAta ? 'Comparativo ATAs' : 'Comparativo Ações',
+        title: `Grêmio Estudantil SEDUC-SP — Comparativo por Escola (${isAta ? 'ATAs' : 'Ações'})`,
+        headers: [
+          'URE',
+          'CIE',
+          'Escola',
+          'Situação no Filtro',
+          isAta ? 'ATAs no Filtro' : 'Ações no Filtro',
+          isAta ? 'Participantes (Filtro)' : 'Estudantes (Filtro)',
+          isAta ? 'Total Geral de ATAs' : 'Total Geral de Ações',
+          'Último Lançamento (Filtro)',
+        ],
+        rows: filteredComparisonSchools.map((r) => [
+          r.compliance.school.ure,
+          r.compliance.school.cie,
+          r.compliance.school.nomeSed,
+          r.hasRecord ? 'Com registro' : 'Sem registro',
+          r.matchedCount,
+          r.matchedParticipants,
+          isAta ? r.compliance.totalAtas : r.compliance.totalAcoes,
+          formatIsoDateBr(r.latestMatchDate),
         ]),
       };
     }
+
     if (viewMode === 'atas') {
       return {
         baseName: `gremio-estudantil-atas-${dateSuffix}`,
@@ -448,6 +585,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
         ]),
       };
     }
+
     return {
       baseName: `gremio-estudantil-acoes-${dateSuffix}`,
       sheetName: 'Ações',
@@ -479,11 +617,12 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   function handleExportPdf() {
     const ds = buildExportDataset();
     const ureScope = selectedUre === 'all' ? 'Todas as UREs' : `URE ${selectedUre}`;
+    const filterContext = describeActiveFilter();
     const generatedAt = formatTimestampBr(new Date().toISOString());
     downloadPdfReport({
       filename: `${ds.baseName}.pdf`,
       title: ds.title,
-      subtitle: `${ureScope} · ${formatNumberBr(ds.rows.length)} registro(s) · Gerado em ${generatedAt}`,
+      subtitle: `${ureScope} · ${filterContext} · ${formatNumberBr(ds.rows.length)} registro(s) · Gerado em ${generatedAt}`,
       headers: ds.headers,
       rows: ds.rows,
     });
@@ -493,32 +632,16 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     'py-3 px-3.5 border-r border-slate-300 dark:border-slate-800 last:border-r-0 select-none';
   const tdBorder = 'border-r border-slate-300/80 dark:border-slate-800 last:border-r-0';
 
+  const currentRecordValue: 'all' | 'ata' | 'acao' =
+    viewMode === 'atas' ? 'ata' : viewMode === 'acoes' ? 'acao' : 'all';
+
   return (
     <div className="space-y-4">
-      {/* Unified Filter Bar (Starts directly at filters, no title heading, dropdown mode instead of buttons) */}
+      {/* Unified Filter Bar (Starts directly at filters, dropdown controls only) */}
       <div className="rounded-xl border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4 shadow-sm">
-
-        {/* Single Filter Row: 1) Tipo de Consulta (Dropdown) -> 2) Escola -> 3) Contexto (Modelo/Tema/Subtema/Mês) -> Busca */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-end">
-          {/* 1. VISUALIZAR (Dropdown instead of pill buttons) */}
-          <div className="lg:col-span-2">
-            <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-              Visualizar
-            </label>
-            <select
-              aria-label="Selecionar tipo de consulta"
-              value={viewMode}
-              onChange={(e) => handleSwitchMode(e.target.value as ExplorerViewMode)}
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-            >
-              <option value="schools">Escolas ({compliance.length})</option>
-              <option value="atas">ATAs ({atas.length})</option>
-              <option value="acoes">Ações ({acoes.length})</option>
-            </select>
-          </div>
-
-          {/* 2. ESCOLA */}
-          <div className={viewMode === 'schools' && recordFilter !== 'acao' ? 'lg:col-span-3' : 'lg:col-span-2'}>
+          {/* 1. UNIDADE ESCOLAR */}
+          <div className="lg:col-span-3">
             <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
               Unidade Escolar
             </label>
@@ -540,27 +663,27 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
             </select>
           </div>
 
-          {/* 3. REGISTRO (Todos | ATA | Ações) */}
-          <div className={viewMode === 'acoes' ? 'lg:col-span-1' : 'lg:col-span-2'}>
+          {/* 2. REGISTRO (Todos | ATA | Ações) */}
+          <div className="lg:col-span-2">
             <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
               Registro
             </label>
             <select
               aria-label="Filtrar por tipo de registro"
-              value={viewMode === 'atas' ? 'ata' : viewMode === 'acoes' ? 'acao' : recordFilter}
+              value={currentRecordValue}
               onChange={(e) => handleRecordFilterChange(e.target.value as 'all' | 'ata' | 'acao')}
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
             >
-              <option value="all">Todos</option>
-              <option value="ata">ATA</option>
-              <option value="acao">Ações</option>
+              <option value="all">Todos ({compliance.length} escolas)</option>
+              <option value="ata">ATA ({atas.length})</option>
+              <option value="acao">Ações ({acoes.length})</option>
             </select>
           </div>
 
-          {/* 4. CONTEXT FILTERS: Tipo de ATA ou Tipo de Ação (Tema + Subtema) + Busca Rápida */}
+          {/* 3. CONTEXT FILTERS */}
           {viewMode === 'schools' && (
             <>
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-3">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Tipo de ATA / Ação
                 </label>
@@ -572,18 +695,22 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                     if (val.startsWith('ata::')) {
                       skipNextViewSyncRef.current = true;
                       onViewModeChange('atas');
-                      setRecordFilter('ata');
                       setCategoryFilter(val.slice(5));
                       setSubthemeFilter('all');
                       setMonthFilter('all');
+                      setPresenceFilter((prev) =>
+                        prev === 'with_record' || prev === 'without_record' ? prev : 'records'
+                      );
                       setPage(1);
                     } else if (val.startsWith('acao::')) {
                       skipNextViewSyncRef.current = true;
                       onViewModeChange('acoes');
-                      setRecordFilter('acao');
                       setCategoryFilter(val.slice(6));
                       setSubthemeFilter('all');
                       setMonthFilter('all');
+                      setPresenceFilter((prev) =>
+                        prev === 'with_record' || prev === 'without_record' ? prev : 'records'
+                      );
                       setPage(1);
                     }
                   }}
@@ -606,7 +733,33 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   </optgroup>
                 </select>
               </div>
-              <div className="lg:col-span-3 relative">
+
+              <div className="lg:col-span-2">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Com / Sem Registro
+                </label>
+                <select
+                  aria-label="Comparar escolas com ou sem registro"
+                  value={effectivePresence}
+                  onChange={(e) => {
+                    setPresenceFilter(e.target.value as PresenceFilter);
+                    setPage(1);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                >
+                  <option value="all_schools">
+                    Todas ({comparisonTotals.totalSchools})
+                  </option>
+                  <option value="with_record">
+                    Com registro ({comparisonTotals.withRecord})
+                  </option>
+                  <option value="without_record">
+                    Sem registro ({comparisonTotals.withoutRecord})
+                  </option>
+                </select>
+              </div>
+
+              <div className="lg:col-span-2 relative">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Busca Rápida
                 </label>
@@ -614,7 +767,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="search"
-                    placeholder="Nome da escola ou código CIE..."
+                    placeholder="Escola ou CIE..."
                     value={searchTerm}
                     onChange={(e) => {
                       setSearchTerm(e.target.value);
@@ -629,7 +782,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
 
           {viewMode === 'atas' && (
             <>
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-4">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Tipo de ATA
                 </label>
@@ -650,7 +803,36 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   ))}
                 </select>
               </div>
-              <div className="lg:col-span-2">
+
+              <div className="lg:col-span-3">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Com / Sem Registro (Escolas)
+                </label>
+                <select
+                  aria-label="Comparar escolas com ou sem registro de ATA"
+                  value={effectivePresence}
+                  onChange={(e) => {
+                    setPresenceFilter(e.target.value as PresenceFilter);
+                    setPage(1);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-medium text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                >
+                  <option value="records">
+                    Lançamentos ({comparisonTotals.launches})
+                  </option>
+                  <option value="all_schools">
+                    Todas as escolas ({comparisonTotals.totalSchools})
+                  </option>
+                  <option value="with_record">
+                    Com registro ({comparisonTotals.withRecord})
+                  </option>
+                  <option value="without_record">
+                    Sem registro ({comparisonTotals.withoutRecord})
+                  </option>
+                </select>
+              </div>
+
+              <div className="lg:col-span-3">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Mês
                 </label>
@@ -671,7 +853,8 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   ))}
                 </select>
               </div>
-              <div className="lg:col-span-2">
+
+              <div className="lg:col-span-9">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Busca Rápida
                 </label>
@@ -679,7 +862,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="search"
-                    placeholder="Buscar..."
+                    placeholder="Buscar por escola, CIE, modelo de ATA ou convocação..."
                     value={searchTerm}
                     onChange={(e) => {
                       setSearchTerm(e.target.value);
@@ -694,7 +877,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
 
           {viewMode === 'acoes' && (
             <>
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-4">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Tipo de Ação (Tema)
                 </label>
@@ -716,7 +899,8 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   ))}
                 </select>
               </div>
-              <div className="lg:col-span-2">
+
+              <div className="lg:col-span-3">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Subtema
                 </label>
@@ -729,7 +913,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   }}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 >
-                  <option value="all">Todos subtemas</option>
+                  <option value="all">Todos os subtemas</option>
                   {acaoSubthemes.map((sub) => (
                     <option key={sub} value={sub}>
                       {sub}
@@ -737,7 +921,36 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   ))}
                 </select>
               </div>
-              <div className="lg:col-span-1">
+
+              <div className="lg:col-span-4">
+                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
+                  Com / Sem Registro (Escolas)
+                </label>
+                <select
+                  aria-label="Comparar escolas com ou sem registro de Ação"
+                  value={effectivePresence}
+                  onChange={(e) => {
+                    setPresenceFilter(e.target.value as PresenceFilter);
+                    setPage(1);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm font-medium text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                >
+                  <option value="records">
+                    Lançamentos ({comparisonTotals.launches})
+                  </option>
+                  <option value="all_schools">
+                    Todas as escolas ({comparisonTotals.totalSchools})
+                  </option>
+                  <option value="with_record">
+                    Com registro ({comparisonTotals.withRecord})
+                  </option>
+                  <option value="without_record">
+                    Sem registro ({comparisonTotals.withoutRecord})
+                  </option>
+                </select>
+              </div>
+
+              <div className="lg:col-span-3">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Mês
                 </label>
@@ -748,9 +961,9 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                     setMonthFilter(e.target.value);
                     setPage(1);
                   }}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 >
-                  <option value="all">Todos</option>
+                  <option value="all">Todos os meses</option>
                   {months.map((m) => (
                     <option key={m} value={m}>
                       {m}
@@ -758,7 +971,8 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   ))}
                 </select>
               </div>
-              <div className="lg:col-span-2">
+
+              <div className="lg:col-span-5">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
                   Busca Rápida
                 </label>
@@ -766,7 +980,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="search"
-                    placeholder="Buscar..."
+                    placeholder="Buscar por escola, CIE, ação, tema ou subtema..."
                     value={searchTerm}
                     onChange={(e) => {
                       setSearchTerm(e.target.value);
@@ -780,18 +994,23 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
           )}
         </div>
 
-        {/* Utility row: Count, 25/50/100 page size selector, and CSV / Excel / PDF exports */}
-        <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
+        {/* Utility row: Live Network Comparison Summary, Count, 25/50/100 page size selector, and CSV / Excel / PDF exports */}
+        <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
             <span className="font-semibold text-slate-900 dark:text-slate-100 tabular-nums">
-              {formatNumberBr(totalCount)} registro(s) localizado(s)
+              {formatNumberBr(totalCount)} registro(s) exibido(s)
             </span>
-            <span className="hidden md:inline text-slate-500 dark:text-slate-400">
+            <span className="text-slate-500 dark:text-slate-400 tabular-nums">
+              · {formatNumberBr(comparisonTotals.withRecord)} de {formatNumberBr(comparisonTotals.totalSchools)} escolas com registro ·{' '}
+              {formatNumberBr(comparisonTotals.withoutRecord)} sem registro
+              {viewMode !== 'schools' && ` · ${formatNumberBr(comparisonTotals.launches)} lançamento(s)`}
+            </span>
+            <span className="hidden xl:inline text-slate-500 dark:text-slate-400">
               · Clique no título da coluna para ordenar
             </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <label className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 mr-1">
               <span>Exibir:</span>
               <select
@@ -854,7 +1073,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            {viewMode === 'schools' && (
+            {isSchoolTableMode && viewMode === 'schools' && (
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-300 dark:border-slate-700 bg-slate-200/75 dark:bg-slate-950/70 text-xs font-semibold uppercase tracking-wider text-slate-800 dark:text-slate-300">
@@ -915,13 +1134,8 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-300/80 dark:divide-slate-800 text-sm">
-                  {pagedSchools.map((c) => {
-                    const latestDate =
-                      [c.ultimaAtaData, c.ultimaAcaoData]
-                        .filter((d): d is string => Boolean(d))
-                        .sort()
-                        .reverse()[0] ?? null;
-
+                  {pagedComparisonSchools.map((row) => {
+                    const c = row.compliance;
                     return (
                       <tr
                         key={c.school.cie}
@@ -937,14 +1151,14 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                         <td className={`py-3 px-3.5 text-slate-700 dark:text-slate-300 whitespace-nowrap ${tdBorder}`}>
                           {c.school.ure}
                         </td>
-                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 ${tdBorder}`}>
+                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums font-semibold ${c.totalAtas > 0 ? 'text-slate-900 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'} ${tdBorder}`}>
                           {c.totalAtas}
                         </td>
-                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 ${tdBorder}`}>
+                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums font-semibold ${c.totalAcoes > 0 ? 'text-slate-900 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'} ${tdBorder}`}>
                           {c.totalAcoes}
                         </td>
                         <td className={`py-3 px-3.5 text-right font-mono tabular-nums text-slate-700 dark:text-slate-300 whitespace-nowrap ${tdBorder}`}>
-                          {formatIsoDateBr(latestDate)}
+                          {formatIsoDateBr(row.latestMatchDate)}
                         </td>
                       </tr>
                     );
@@ -953,7 +1167,126 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
               </table>
             )}
 
-            {viewMode === 'atas' && (
+            {isSchoolTableMode && (viewMode === 'atas' || viewMode === 'acoes') && (
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-300 dark:border-slate-700 bg-slate-200/75 dark:bg-slate-950/70 text-xs font-semibold uppercase tracking-wider text-slate-800 dark:text-slate-300">
+                    <th className={thClass}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('schools', 'cie')}
+                        className="inline-flex items-center gap-1.5 hover:text-blue-700 dark:hover:text-blue-300"
+                      >
+                        CIE {renderSortIcon(schoolSort, 'cie')}
+                      </button>
+                    </th>
+                    <th className={thClass}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('schools', 'nomeSed')}
+                        className="inline-flex items-center gap-1.5 hover:text-blue-700 dark:hover:text-blue-300"
+                      >
+                        Unidade Escolar {renderSortIcon(schoolSort, 'nomeSed')}
+                      </button>
+                    </th>
+                    <th className={thClass}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('schools', 'ure')}
+                        className="inline-flex items-center gap-1.5 hover:text-blue-700 dark:hover:text-blue-300"
+                      >
+                        URE {renderSortIcon(schoolSort, 'ure')}
+                      </button>
+                    </th>
+                    <th className={`${thClass} text-right`}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('schools', 'matchedCount')}
+                        className="inline-flex items-center justify-end gap-1.5 w-full hover:text-blue-700 dark:hover:text-blue-300"
+                      >
+                        {viewMode === 'atas' ? 'ATAs no Filtro' : 'Ações no Filtro'}{' '}
+                        {renderSortIcon(schoolSort, 'matchedCount')}
+                      </button>
+                    </th>
+                    <th className={`${thClass} text-right`}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('schools', 'matchedParticipants')}
+                        className="inline-flex items-center justify-end gap-1.5 w-full hover:text-blue-700 dark:hover:text-blue-300"
+                      >
+                        {viewMode === 'atas' ? 'Participantes' : 'Alunos'}{' '}
+                        {renderSortIcon(schoolSort, 'matchedParticipants')}
+                      </button>
+                    </th>
+                    <th className={`${thClass} text-right`}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          toggleSort('schools', viewMode === 'atas' ? 'totalAtas' : 'totalAcoes')
+                        }
+                        className="inline-flex items-center justify-end gap-1.5 w-full hover:text-blue-700 dark:hover:text-blue-300"
+                      >
+                        {viewMode === 'atas' ? 'Total ATAs' : 'Total Ações'}{' '}
+                        {renderSortIcon(schoolSort, viewMode === 'atas' ? 'totalAtas' : 'totalAcoes')}
+                      </button>
+                    </th>
+                    <th className={`${thClass} text-right`}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('schools', 'latestDate')}
+                        className="inline-flex items-center justify-end gap-1.5 w-full hover:text-blue-700 dark:hover:text-blue-300"
+                      >
+                        Último Lançamento {renderSortIcon(schoolSort, 'latestDate')}
+                      </button>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-300/80 dark:divide-slate-800 text-sm">
+                  {pagedComparisonSchools.map((row) => {
+                    const c = row.compliance;
+                    return (
+                      <tr
+                        key={c.school.cie}
+                        onClick={() => setSelectedSchoolCie(c.school.cie)}
+                        className="cursor-pointer even:bg-slate-50/75 dark:even:bg-slate-900/40 hover:bg-blue-50/80 dark:hover:bg-slate-800/70 transition-colors"
+                      >
+                        <td className={`py-3 px-3.5 font-mono tabular-nums text-slate-700 dark:text-slate-300 whitespace-nowrap ${tdBorder}`}>
+                          {c.school.cie}
+                        </td>
+                        <td className={`py-3 px-3.5 font-semibold text-slate-900 dark:text-slate-100 ${tdBorder}`}>
+                          {c.school.nomeSed}
+                        </td>
+                        <td className={`py-3 px-3.5 text-slate-700 dark:text-slate-300 whitespace-nowrap ${tdBorder}`}>
+                          {c.school.ure}
+                        </td>
+                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums font-semibold whitespace-nowrap ${tdBorder}`}>
+                          {row.hasRecord ? (
+                            <span className="text-emerald-700 dark:text-emerald-400">
+                              {formatNumberBr(row.matchedCount)}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 dark:text-slate-400 font-medium">
+                              0 · Sem registro
+                            </span>
+                          )}
+                        </td>
+                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200 ${tdBorder}`}>
+                          {formatNumberBr(row.matchedParticipants)}
+                        </td>
+                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums text-slate-700 dark:text-slate-300 ${tdBorder}`}>
+                          {viewMode === 'atas' ? c.totalAtas : c.totalAcoes}
+                        </td>
+                        <td className={`py-3 px-3.5 text-right font-mono tabular-nums text-slate-700 dark:text-slate-300 whitespace-nowrap ${tdBorder}`}>
+                          {formatIsoDateBr(row.latestMatchDate)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {!isSchoolTableMode && viewMode === 'atas' && (
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-300 dark:border-slate-700 bg-slate-200/75 dark:bg-slate-950/70 text-xs font-semibold uppercase tracking-wider text-slate-800 dark:text-slate-300">
@@ -1043,7 +1376,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
               </table>
             )}
 
-            {viewMode === 'acoes' && (
+            {!isSchoolTableMode && viewMode === 'acoes' && (
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-300 dark:border-slate-700 bg-slate-200/75 dark:bg-slate-950/70 text-xs font-semibold uppercase tracking-wider text-slate-800 dark:text-slate-300">
