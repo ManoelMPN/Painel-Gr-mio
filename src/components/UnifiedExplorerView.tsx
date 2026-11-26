@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -74,6 +74,23 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   const [pageSize, setPageSize] = useState<number>(25);
   const [selectedSchoolCie, setSelectedSchoolCie] = useState<string | null>(null);
 
+  const prevViewModeRef = useRef<ExplorerViewMode>(viewMode);
+  const skipNextViewSyncRef = useRef(false);
+
+  useEffect(() => {
+    if (prevViewModeRef.current === viewMode) return;
+    prevViewModeRef.current = viewMode;
+    if (skipNextViewSyncRef.current) {
+      skipNextViewSyncRef.current = false;
+      return;
+    }
+    setRecordFilter(viewMode === 'atas' ? 'ata' : viewMode === 'acoes' ? 'acao' : 'all');
+    setCategoryFilter('all');
+    setSubthemeFilter('all');
+    setMonthFilter('all');
+    setPage(1);
+  }, [viewMode]);
+
   // Ordered school options for the URE currently selected
   const schoolOptions = useMemo(() => {
     return [...compliance]
@@ -106,6 +123,32 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
     }
     return [...set].sort().reverse();
   }, [viewMode, atas, acoes]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedUre]);
+
+  useEffect(() => {
+    if (
+      schoolFilter !== 'all' &&
+      !schoolOptions.some((name) => normalizeSchoolKey(name) === normalizeSchoolKey(schoolFilter))
+    ) {
+      setSchoolFilter('all');
+    }
+  }, [schoolFilter, schoolOptions]);
+
+  useEffect(() => {
+    if (viewMode === 'atas' && categoryFilter !== 'all' && !ataModels.includes(categoryFilter)) {
+      setCategoryFilter('all');
+    } else if (viewMode === 'acoes') {
+      if (categoryFilter !== 'all' && !acaoThemes.includes(categoryFilter)) {
+        setCategoryFilter('all');
+        setSubthemeFilter('all');
+      } else if (subthemeFilter !== 'all' && !acaoSubthemes.includes(subthemeFilter)) {
+        setSubthemeFilter('all');
+      }
+    }
+  }, [viewMode, categoryFilter, subthemeFilter, ataModels, acaoThemes, acaoSubthemes]);
 
   function toggleSort(mode: ExplorerViewMode, key: string) {
     const toggle = (prev: { key: string; dir: SortDir }) => {
@@ -328,7 +371,10 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   }, [acoes, selectedCompliance]);
 
   function handleSwitchMode(nextMode: ExplorerViewMode) {
-    onViewModeChange(nextMode);
+    if (nextMode !== viewMode) {
+      skipNextViewSyncRef.current = true;
+      onViewModeChange(nextMode);
+    }
     setRecordFilter(nextMode === 'atas' ? 'ata' : nextMode === 'acoes' ? 'acao' : 'all');
     setCategoryFilter('all');
     setSubthemeFilter('all');
@@ -337,15 +383,17 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
   }
 
   function handleRecordFilterChange(nextRecord: 'all' | 'ata' | 'acao') {
+    const nextMode: ExplorerViewMode =
+      nextRecord === 'all' ? 'schools' : nextRecord === 'ata' ? 'atas' : 'acoes';
+    if (nextMode !== viewMode) {
+      skipNextViewSyncRef.current = true;
+      onViewModeChange(nextMode);
+    }
     setRecordFilter(nextRecord);
     setCategoryFilter('all');
     setSubthemeFilter('all');
+    setMonthFilter('all');
     setPage(1);
-    if (viewMode !== 'schools') {
-      if (nextRecord === 'all') onViewModeChange('schools');
-      else if (nextRecord === 'ata') onViewModeChange('atas');
-      else onViewModeChange('acoes');
-    }
   }
 
   function handleResetFilters() {
@@ -510,7 +558,7 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
           </div>
 
           {/* 4. CONTEXT FILTERS: Tipo de ATA ou Tipo de Ação (Tema + Subtema) + Busca Rápida */}
-          {viewMode === 'schools' && recordFilter === 'all' && (
+          {viewMode === 'schools' && (
             <>
               <div className="lg:col-span-2">
                 <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
@@ -522,14 +570,20 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   onChange={(e) => {
                     const val = e.target.value;
                     if (val.startsWith('ata::')) {
+                      skipNextViewSyncRef.current = true;
+                      onViewModeChange('atas');
                       setRecordFilter('ata');
                       setCategoryFilter(val.slice(5));
                       setSubthemeFilter('all');
+                      setMonthFilter('all');
                       setPage(1);
                     } else if (val.startsWith('acao::')) {
+                      skipNextViewSyncRef.current = true;
+                      onViewModeChange('acoes');
                       setRecordFilter('acao');
                       setCategoryFilter(val.slice(6));
                       setSubthemeFilter('all');
+                      setMonthFilter('all');
                       setPage(1);
                     }
                   }}
@@ -561,116 +615,6 @@ export const UnifiedExplorerView: React.FC<UnifiedExplorerViewProps> = ({
                   <input
                     type="search"
                     placeholder="Nome da escola ou código CIE..."
-                    value={searchTerm}
-                    onChange={(e) => {
-                      setSearchTerm(e.target.value);
-                      setPage(1);
-                    }}
-                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 pl-9 pr-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {viewMode === 'schools' && recordFilter === 'ata' && (
-            <>
-              <div className="lg:col-span-2">
-                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Tipo de ATA
-                </label>
-                <select
-                  aria-label="Filtrar por tipo de ATA"
-                  value={categoryFilter}
-                  onChange={(e) => {
-                    setCategoryFilter(e.target.value);
-                    setPage(1);
-                  }}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                >
-                  <option value="all">Todos os modelos de ATA</option>
-                  {ataModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="lg:col-span-3 relative">
-                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Busca Rápida
-                </label>
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="search"
-                    placeholder="Nome da escola ou código CIE..."
-                    value={searchTerm}
-                    onChange={(e) => {
-                      setSearchTerm(e.target.value);
-                      setPage(1);
-                    }}
-                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 pl-9 pr-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {viewMode === 'schools' && recordFilter === 'acao' && (
-            <>
-              <div className="lg:col-span-2">
-                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Tipo de Ação (Tema)
-                </label>
-                <select
-                  aria-label="Filtrar por tema da ação"
-                  value={categoryFilter}
-                  onChange={(e) => {
-                    setCategoryFilter(e.target.value);
-                    setSubthemeFilter('all');
-                    setPage(1);
-                  }}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                >
-                  <option value="all">Todos os temas</option>
-                  {acaoThemes.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="lg:col-span-2">
-                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Subtema
-                </label>
-                <select
-                  aria-label="Filtrar por subtema"
-                  value={subthemeFilter}
-                  onChange={(e) => {
-                    setSubthemeFilter(e.target.value);
-                    setPage(1);
-                  }}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                >
-                  <option value="all">Todos subtemas</option>
-                  {acaoSubthemes.map((sub) => (
-                    <option key={sub} value={sub}>
-                      {sub}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="lg:col-span-2 relative">
-                <label className="block text-xs font-semibold text-slate-800 dark:text-slate-300 mb-1">
-                  Busca Rápida
-                </label>
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-500 dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="search"
-                    placeholder="Escola ou CIE..."
                     value={searchTerm}
                     onChange={(e) => {
                       setSearchTerm(e.target.value);

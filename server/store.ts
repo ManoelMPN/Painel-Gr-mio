@@ -204,8 +204,8 @@ function resolveSeedAssetPath(filename: string): string | null {
 }
 
 function seedInitialRecords(schools: School[]): { atas: AtaRecord[]; acoes: AcaoRecord[] } {
-  const atasPath = resolveSeedAssetPath('Atas_do_Gr_mio_Estudantil_0fba7e87.csv');
-  const acoesPath = resolveSeedAssetPath('A__es_do_Gr_mio_Estudantil_34c48d07.csv');
+  const atasPath = resolveSeedAssetPath('SGGE_-_Atas_do_Gr_mio_Estudantil__2__3bd05309.csv');
+  const acoesPath = resolveSeedAssetPath('A__es_do_Gr_mio_Estudantil__4__07f7669a.csv');
 
   let atas: AtaRecord[] = [];
   let acoes: AcaoRecord[] = [];
@@ -332,14 +332,15 @@ export function loadStore(): StoreState {
     }
   }
 
-  const schools = buildBaseSchools();
-  const { atas, acoes } = seedInitialRecords(schools);
+  const baseSchools = buildBaseSchools();
+  const { atas, acoes } = seedInitialRecords(baseSchools);
+  const mergedSeed = mergeSchoolsAndUresFromRecords(baseSchools, DEFAULT_URE_CONTACTS, atas, acoes);
   const now = new Date().toISOString();
   const sb = resolveSupabaseConfig();
 
   cachedState = {
-    schools,
-    ureContacts: DEFAULT_URE_CONTACTS,
+    schools: mergedSeed.schools,
+    ureContacts: mergedSeed.ureContacts,
     atas,
     acoes,
     metas: DEFAULT_METAS,
