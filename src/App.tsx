@@ -28,7 +28,6 @@ import { CampaignAndGoalsView } from './components/CampaignAndGoalsView.tsx';
 import { MasterAdminView } from './components/MasterAdminView.tsx';
 import { OverviewDashboard } from './components/OverviewDashboard.tsx';
 import { UnifiedExplorerView, type ExplorerViewMode } from './components/UnifiedExplorerView.tsx';
-import { formatTimestampBr } from './utils/formatters.ts';
 
 export default function App() {
   // Dual-theme state synced to .dark on <html>
@@ -499,24 +498,8 @@ export default function App() {
 
       {/* Clean Institutional Footer */}
       <footer className="border-t border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900 mt-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-slate-700 dark:text-slate-400">
-          <div className="font-medium">
-            Grêmio Estudantil SEDUC-SP · <span className="font-semibold text-slate-900 dark:text-slate-200">Develop by Manoel Pereira</span>
-          </div>
-          {dashboard && (
-            <div className="tabular-nums">
-              {dashboard.integrations.lastSupabaseSyncAt ? (
-                <span>
-                  Atualização Supabase: {formatTimestampBr(dashboard.integrations.lastSupabaseSyncAt)}
-                </span>
-              ) : (
-                <span>
-                  ATAs: {formatTimestampBr(dashboard.integrations.lastAtasUploadAt)} · Ações:{' '}
-                  {formatTimestampBr(dashboard.integrations.lastAcoesUploadAt)}
-                </span>
-              )}
-            </div>
-          )}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 text-center text-xs font-semibold text-slate-700 dark:text-slate-300">
+          Desenvolvido por Manoel Pereira
         </div>
       </footer>
 

@@ -65,22 +65,39 @@ function makeDiscoveredSchool(diretoria: string, rawSchool: string): School {
 export function parseAtasCsv(csvText: string, schools: School[]): ParsedCsvResult<AtaRecord> {
   const cleaned = csvText.replace(/^\uFEFF/, '');
   const lines = cleaned.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) {
-    throw new Error('Planilha de ATAs vazia ou sem cabeçalho válido.');
+  if (lines.length === 0) {
+    throw new Error('Planilha de ATAs vazia.');
   }
 
-  const header = splitSemicolonLine(lines[0]).map((h) => h.toLowerCase());
-  const idxDir = header.findIndex((h) => h.includes('diretoria') || h === 'ure');
-  const idxEsc = header.findIndex((h) => h === 'escola' || h.includes('escola'));
-  const idxMod = header.findIndex((h) => h.includes('modelo'));
-  const idxPart = header.findIndex((h) => h.includes('quantidade'));
-  const idxConv = header.findIndex((h) => h.includes('convoca'));
-  const idxData = header.findIndex((h) => h.includes('data'));
+  const firstCols = splitSemicolonLine(lines[0]);
+  const header = firstCols.map((h) => h.toLowerCase());
+  let idxDir = header.findIndex((h) => h.includes('diretoria') || h === 'ure');
+  let idxEsc = header.findIndex((h) => h === 'escola' || h.includes('escola'));
+  let idxMod = header.findIndex((h) => h.includes('modelo'));
+  let idxPart = header.findIndex((h) => h.includes('quantidade'));
+  let idxConv = header.findIndex((h) => h.includes('convoca'));
+  let idxData = header.findIndex((h) => h.includes('data'));
+  let startIdx = 1;
 
   if (idxEsc === -1 || idxMod === -1 || idxData === -1) {
-    throw new Error(
-      'Cabeçalho inválido para planilha de ATAs. Esperado: Diretoria;Escola;Modelo de ATA;Quantidade Participantes;Convocação de Reunião;Data da Reunião'
-    );
+    const looksHeaderless =
+      firstCols.length >= 6 &&
+      (/^\d{2}\/\d{2}\/\d{4}$/.test(firstCols[5] || '') || /^\d+$/.test(firstCols[3] || ''));
+    if (looksHeaderless) {
+      idxDir = 0;
+      idxEsc = 1;
+      idxMod = 2;
+      idxPart = 3;
+      idxConv = 4;
+      idxData = 5;
+      startIdx = 0;
+    } else {
+      throw new Error(
+        'Cabeçalho inválido para planilha de ATAs. Esperado: Diretoria;Escola;Modelo de ATA;Quantidade Participantes;Convocação de Reunião;Data da Reunião'
+      );
+    }
+  } else if (lines.length < 2) {
+    throw new Error('Planilha de ATAs vazia (apenas cabeçalho encontrado).');
   }
 
   const lookup = buildSchoolLookup(schools);
@@ -88,7 +105,7 @@ export function parseAtasCsv(csvText: string, schools: School[]): ParsedCsvResul
   const records: AtaRecord[] = [];
   const unmatched = new Set<string>();
 
-  for (let i = 1; i < lines.length; i += 1) {
+  for (let i = startIdx; i < lines.length; i += 1) {
     const cols = splitSemicolonLine(lines[i]);
     const rawSchool = cols[idxEsc] ?? '';
     if (!rawSchool) continue;
@@ -111,9 +128,10 @@ export function parseAtasCsv(csvText: string, schools: School[]): ParsedCsvResul
     const dataReuniao = cols[idxData] ?? '';
     const { dataIso, mesAno } = parseBrDateToIso(dataReuniao);
     const participantesRaw = parseInt(cols[idxPart] ?? '0', 10);
+    const rowNum = startIdx === 0 ? i + 1 : i;
 
     records.push({
-      id: `ata-${i}-${schoolObj?.cie ?? 'ext'}`,
+      id: `ata-${rowNum}-${schoolObj?.cie ?? 'ext'}`,
       diretoria,
       escola: schoolObj ? schoolObj.nomeSed : rawSchool,
       modeloAta,
@@ -128,7 +146,7 @@ export function parseAtasCsv(csvText: string, schools: School[]): ParsedCsvResul
 
   return {
     records,
-    totalRows: lines.length - 1,
+    totalRows: lines.length - startIdx,
     unmatchedSchools: [...unmatched],
     discoveredSchools: [...discoveredMap.values()],
   };
@@ -137,24 +155,43 @@ export function parseAtasCsv(csvText: string, schools: School[]): ParsedCsvResul
 export function parseAcoesCsv(csvText: string, schools: School[]): ParsedCsvResult<AcaoRecord> {
   const cleaned = csvText.replace(/^\uFEFF/, '');
   const lines = cleaned.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) {
-    throw new Error('Planilha de Ações vazia ou sem cabeçalho válido.');
+  if (lines.length === 0) {
+    throw new Error('Planilha de Ações vazia.');
   }
 
-  const header = splitSemicolonLine(lines[0]).map((h) => h.toLowerCase());
-  const idxDir = header.findIndex((h) => h.includes('diretoria') || h === 'ure');
-  const idxEsc = header.findIndex((h) => h === 'escola' || h.includes('escola'));
-  const idxTema = header.findIndex((h) => h === 'tema');
-  const idxSub = header.findIndex((h) => h.includes('subtema'));
-  const idxNome = header.findIndex((h) => h.includes('nome'));
-  const idxPart = header.findIndex((h) => h.includes('quantidade'));
-  const idxData = header.findIndex((h) => h.includes('data'));
-  const idxProp = header.findIndex((h) => h.includes('proposta'));
+  const firstCols = splitSemicolonLine(lines[0]);
+  const header = firstCols.map((h) => h.toLowerCase());
+  let idxDir = header.findIndex((h) => h.includes('diretoria') || h === 'ure');
+  let idxEsc = header.findIndex((h) => h === 'escola' || h.includes('escola'));
+  let idxTema = header.findIndex((h) => h === 'tema');
+  let idxSub = header.findIndex((h) => h.includes('subtema'));
+  let idxNome = header.findIndex((h) => h.includes('nome'));
+  let idxPart = header.findIndex((h) => h.includes('quantidade'));
+  let idxData = header.findIndex((h) => h.includes('data'));
+  let idxProp = header.findIndex((h) => h.includes('proposta'));
+  let startIdx = 1;
 
   if (idxEsc === -1 || idxTema === -1 || idxNome === -1 || idxData === -1) {
-    throw new Error(
-      'Cabeçalho inválido para planilha de Ações. Esperado: Diretoria;Escola;Tema;Subtema;Nome da Ação;Quantidade Alunos Participantes;Data Ação;Proposta Ação'
-    );
+    const looksHeaderless =
+      firstCols.length >= 8 &&
+      (/^\d{2}\/\d{2}\/\d{4}$/.test(firstCols[6] || '') || /^\d+$/.test(firstCols[5] || ''));
+    if (looksHeaderless) {
+      idxDir = 0;
+      idxEsc = 1;
+      idxTema = 2;
+      idxSub = 3;
+      idxNome = 4;
+      idxPart = 5;
+      idxData = 6;
+      idxProp = 7;
+      startIdx = 0;
+    } else {
+      throw new Error(
+        'Cabeçalho inválido para planilha de Ações. Esperado: Diretoria;Escola;Tema;Subtema;Nome da Ação;Quantidade Alunos Participantes;Data Ação;Proposta Ação'
+      );
+    }
+  } else if (lines.length < 2) {
+    throw new Error('Planilha de Ações vazia (apenas cabeçalho encontrado).');
   }
 
   const lookup = buildSchoolLookup(schools);
@@ -162,7 +199,7 @@ export function parseAcoesCsv(csvText: string, schools: School[]): ParsedCsvResu
   const records: AcaoRecord[] = [];
   const unmatched = new Set<string>();
 
-  for (let i = 1; i < lines.length; i += 1) {
+  for (let i = startIdx; i < lines.length; i += 1) {
     const cols = splitSemicolonLine(lines[i]);
     const rawSchool = cols[idxEsc] ?? '';
     if (!rawSchool) continue;
@@ -184,9 +221,10 @@ export function parseAcoesCsv(csvText: string, schools: School[]): ParsedCsvResu
     const dataAcao = cols[idxData] ?? '';
     const { dataIso, mesAno } = parseBrDateToIso(dataAcao);
     const participantesRaw = parseInt(cols[idxPart] ?? '0', 10);
+    const rowNum = startIdx === 0 ? i + 1 : i;
 
     records.push({
-      id: `acao-${i}-${schoolObj?.cie ?? 'ext'}`,
+      id: `acao-${rowNum}-${schoolObj?.cie ?? 'ext'}`,
       diretoria,
       escola: schoolObj ? schoolObj.nomeSed : rawSchool,
       tema: cols[idxTema] ?? 'Outros',
@@ -202,7 +240,7 @@ export function parseAcoesCsv(csvText: string, schools: School[]): ParsedCsvResu
 
   return {
     records,
-    totalRows: lines.length - 1,
+    totalRows: lines.length - startIdx,
     unmatchedSchools: [...unmatched],
     discoveredSchools: [...discoveredMap.values()],
   };

@@ -204,8 +204,8 @@ function resolveSeedAssetPath(filename: string): string | null {
 }
 
 function seedInitialRecords(schools: School[]): { atas: AtaRecord[]; acoes: AcaoRecord[] } {
-  const atasPath = resolveSeedAssetPath('SGGE_-_Atas_do_Gr_mio_Estudantil__2__3bd05309.csv');
-  const acoesPath = resolveSeedAssetPath('A__es_do_Gr_mio_Estudantil__4__07f7669a.csv');
+  const atasPath = resolveSeedAssetPath('SGGE_-_Atas_do_Gr_mio_Estudantil__6__15e10544.csv');
+  const acoesPath = resolveSeedAssetPath('A__es_do_Gr_mio_Estudantil__5__cf0a3794.csv');
 
   let atas: AtaRecord[] = [];
   let acoes: AcaoRecord[] = [];
